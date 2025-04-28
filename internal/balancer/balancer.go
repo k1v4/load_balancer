@@ -1,44 +1,110 @@
 package balancer
 
 import (
+	"fmt"
+	"github.com/k1v4/load_balancer/internal/config"
 	"net/url"
 	"sync"
+	"time"
 )
 
 type Balancer struct {
-	Backends []*url.URL
+	backends []*Backend
 	index    int
-	mu       *sync.Mutex
+	mu       sync.Mutex
+	stopChan chan struct{}
 }
 
-func NewBalancer(backendUrls []string) (*Balancer, error) {
-	var backends []*url.URL
-	for _, addr := range backendUrls {
-		u, err := url.Parse(addr)
-		if err != nil {
-			return nil, err
-		}
+type Backend struct {
+	URL        *url.URL
+	tokens     int        // текущее количество токенов
+	capacity   int        // максимальное количество токенов (BucketSize)
+	refillRate int        // токенов в секунду (RefillRate)
+	lastRefill time.Time  // время последнего пополнения
+	mu         sync.Mutex // защтиа доступа к токенам
+}
 
-		backends = append(backends, u)
+func NewBalancer(cfgs []config.Client) (*Balancer, error) {
+	b := &Balancer{
+		stopChan: make(chan struct{}),
 	}
 
-	return &Balancer{
-		Backends: backends,
-		mu:       &sync.Mutex{},
-		index:    0,
-	}, nil
+	for _, cfg := range cfgs {
+		u, err := url.Parse(cfg.URL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid backend URL %s: %v", cfg.URL, err)
+		}
+
+		b.backends = append(b.backends, &Backend{
+			URL:        u,
+			tokens:     cfg.BucketSize,
+			capacity:   cfg.BucketSize,
+			refillRate: cfg.RefillRate,
+			lastRefill: time.Now(),
+		})
+	}
+
+	go b.refillTokens() // фоновое пополнение токенов
+	return b, nil
 }
 
-func (b *Balancer) NextBackend() *url.URL {
+// refillTokens фоновая горутина для пополнения токенов
+func (b *Balancer) refillTokens() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			b.mu.Lock()
+			for _, be := range b.backends {
+				be.mu.Lock()
+				now := time.Now()
+				elapsed := now.Sub(be.lastRefill).Seconds()
+				tokensToAdd := int(elapsed * float64(be.refillRate))
+
+				if tokensToAdd > 0 {
+					be.tokens += tokensToAdd
+					if be.tokens > be.capacity {
+						be.tokens = be.capacity
+					}
+					be.lastRefill = now
+				}
+				be.mu.Unlock()
+			}
+			b.mu.Unlock()
+		case <-b.stopChan:
+			return
+		}
+	}
+}
+
+// NextBackend выбор бэкенда с учетом его текущей загрузки
+func (b *Balancer) NextBackend() (*url.URL, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if len(b.Backends) == 0 {
-		return nil
+	if len(b.backends) == 0 {
+		return nil, fmt.Errorf("no backends available")
 	}
 
-	backend := b.Backends[b.index]
-	b.index = (b.index + 1) % len(b.Backends)
+	// проверяем все бэкенды по кругу
+	for i := 0; i < len(b.backends); i++ {
+		be := b.backends[b.index]
+		b.index = (b.index + 1) % len(b.backends)
 
-	return backend
+		be.mu.Lock()
+		if be.tokens > 0 {
+			be.tokens--
+			be.mu.Unlock()
+			return be.URL, nil
+		}
+		be.mu.Unlock()
+	}
+
+	return nil, fmt.Errorf("all servers are overloaded (no tokens available)")
+}
+
+func (b *Balancer) Stop() {
+	close(b.stopChan)
 }

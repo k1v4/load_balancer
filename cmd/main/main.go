@@ -15,6 +15,8 @@ func main() {
 		log.Fatalf("load balancer configuration error: %v", err)
 	}
 
+	fmt.Println(cfg)
+
 	balance, err := balancer.NewBalancer(cfg.Backends)
 	if err != nil {
 		log.Fatalf("load balancer error: %v", err)
