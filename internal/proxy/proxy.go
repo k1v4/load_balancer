@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"encoding/json"
 	"github.com/k1v4/load_balancer/internal/balancer"
+	"github.com/k1v4/load_balancer/internal/entity"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -31,14 +33,31 @@ func NewReverseProxy(b *balancer.Balancer) *httputil.ReverseProxy {
 		},
 		// отлавливает ошибки при перенаправлении запроса
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if lbErr := r.Header.Get("X-LB-Error"); lbErr == "all servers are overloaded (no tokens available)" {
+			switch r.Header.Get("X-LB-Error") {
+			case "all servers are overloaded (no tokens available)":
 				w.WriteHeader(http.StatusServiceUnavailable)
 				w.Write([]byte("503 - All backend servers are busy"))
-
+				json.NewEncoder(w).Encode(entity.ErrorResponse{
+					Code:    http.StatusServiceUnavailable,
+					Message: "All backend servers are busy\"",
+				})
 				return
+			case "rate limit exceeded":
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(entity.ErrorResponse{
+					Code:    http.StatusTooManyRequests,
+					Message: "Rate limit exceeded",
+				})
+				return
+			default:
+				log.Printf("Proxy error: %v", err)
+				w.WriteHeader(http.StatusBadGateway)
+				_ = json.NewEncoder(w).Encode(entity.ErrorResponse{
+					Code:    http.StatusBadGateway,
+					Message: "Bad Gateway: backend service is unavailable",
+				})
 			}
-
-			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
 	}
 }
