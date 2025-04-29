@@ -1,0 +1,12 @@
+port: "8080"
+
+backends:
+  - url: "http://backend1:8081"
+    bucket_size: 1
+    refill_rate: 1
+  - url: "http://backend2:8082"
+    bucket_size: 3
+    refill_rate: 1
+  - url: "http://localhost:8083"
+    bucket_size: 3
+    refill_rate: 1
