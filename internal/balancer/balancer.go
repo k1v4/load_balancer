@@ -24,6 +24,7 @@ type Backend struct {
 	mu         sync.Mutex // защтиа доступа к токенам
 }
 
+// NewBalancer создаёт экземпляр балансировщика
 func NewBalancer(cfgs []config.Client) (*Balancer, error) {
 	b := &Balancer{
 		stopChan: make(chan struct{}),

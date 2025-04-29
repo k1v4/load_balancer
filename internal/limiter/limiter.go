@@ -22,6 +22,7 @@ type Limiter struct {
 	mu      *sync.RWMutex
 }
 
+// refillBuckets регулярно (раз в секунду) пополняет токены в каждом бакете в соответствии с RefillRate.
 func (l *Limiter) refillBuckets() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -35,6 +36,7 @@ func (l *Limiter) refillBuckets() {
 			now := time.Now()
 			elapsed := now.Sub(bucket.LastRefill).Seconds()
 
+			// считаем сколько токенов нужно добавить
 			tokensToAdd := int(elapsed * float64(bucket.RefillRate))
 
 			if tokensToAdd > 0 {
@@ -54,6 +56,8 @@ func (l *Limiter) refillBuckets() {
 	}
 }
 
+// Allow проверяет, доступен ли клиенту доступ на основе токенов.
+// Если токен есть — он тратится и доступ разрешается. Иначе — отказ.
 func (l *Limiter) Allow(ip net.IP) (bool, error) {
 	clientID := ip.String()
 
@@ -61,25 +65,9 @@ func (l *Limiter) Allow(ip net.IP) (bool, error) {
 	bucket, exists := l.buckets[clientID]
 	l.mu.RUnlock()
 
+	// неизвестный адрес
 	if !exists {
-		l.mu.Lock()
-
-		bucket = &Bucket{
-			Client: config.Client{
-				URL:        clientID,
-				BucketSize: 10,
-				RefillRate: 5,
-			},
-			Tokens:     10,
-			Capacity:   10,
-			RefillRate: 5,
-			LastRefill: time.Now(),
-			Mu:         &sync.Mutex{},
-		}
-
-		l.buckets[clientID] = bucket
-
-		l.mu.Unlock()
+		return false, fmt.Errorf("clientID %s does not exist", clientID)
 	}
 
 	bucket.Mu.Lock()
